@@ -1,0 +1,82 @@
+name: Build HGhub iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      APPLE_DEVELOPMENT_TEAM: "ABCDE12345"
+    steps:
+      - name: Checkout HGhub source
+        uses: actions/checkout@v4
+        with:
+          repository: Minireel/HGhub
+          ref: main
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios-build
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Init iOS project
+        run: |
+          pnpm tauri ios init --ci
+          for plist in $(find src-tauri/gen/apple -name "Info.plist" 2>/dev/null); do
+            for key in "UISupportedInterfaceOrientations" "UISupportedInterfaceOrientations~iphone" "UISupportedInterfaceOrientations~ipad"; do
+              /usr/libexec/PlistBuddy -c "Delete :${key}" "$plist" 2>/dev/null || true
+              /usr/libexec/PlistBuddy -c "Add :${key} array" "$plist"
+              /usr/libexec/PlistBuddy -c "Add :${key}:0 string UIInterfaceOrientationPortrait" "$plist"
+              /usr/libexec/PlistBuddy -c "Add :${key}:1 string UIInterfaceOrientationLandscapeLeft" "$plist"
+              /usr/libexec/PlistBuddy -c "Add :${key}:2 string UIInterfaceOrientationLandscapeRight" "$plist"
+            done
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$plist"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$plist"
+          done
+
+      - name: Build unsigned IPA
+        run: |
+          V=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "VERSION=$V" >> $GITHUB_ENV
+          bash scripts/build-ios-unsigned.sh "$V"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-iOS-IPA
+          path: artifacts/*.ipa
+          if-no-files-found: error
+
+      - name: Publish release with IPA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${VERSION}-ios"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/*.ipa --clobber
+          else
+            gh release create "$TAG" artifacts/*.ipa --title "HGhub v${VERSION} iOS (unsigned)" --notes "Unsigned IPA built on macOS runner from Minireel/HGhub." --latest
+          fi
