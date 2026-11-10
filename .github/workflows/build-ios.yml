@@ -73,6 +73,7 @@ jobs:
       - name: Publish release with IPA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="v${VERSION}-ios"
           if gh release view "$TAG" >/dev/null 2>&1; then
